@@ -1,25 +1,38 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { Modal, Button, Input, Select, Checkbox, notification } from 'antd';
+import { loadStripe } from '@stripe/stripe-js';
+import { Elements, useStripe, useElements, CardElement } from '@stripe/react-stripe-js';
 import '../css/proyecto.css';
-import StripeCheckout from 'react-stripe-checkout';
+
+const stripePromise = loadStripe('pk_test_51Q9AMkB3EtWqqOZ2sr4dExyPgtFOgL7UBEAVEiuUbKdBFaNQSCivO5lTntoXL7DO6vxSjlRio5frb1MrqtztSg68007Hlq6at0'); // Reemplaza con tu clave pública
+
+const { Option } = Select;
 
 const api = axios.create({
-  baseURL: 'https://tareas-api-gm7z.onrender.com/api/proyectos', // URL actualizada
+  baseURL: 'https://tareas-api-gm7z.onrender.com/api/proyectos',
 });
 
 const ProyectoForm = () => {
   const [proyectos, setProyectos] = useState([]);
-  const [titulo, setTitulo] = useState('');
-  const [descripcion, setDescripcion] = useState('');
-  const [costo, setCosto] = useState('');
-  const [fechaVencimiento, setFechaVencimiento] = useState('');
-  const [prioridad, setPrioridad] = useState('media');
-  const [asignadoA, setAsignadoA] = useState('');
-  const [categoria, setCategoria] = useState('');
-  const [completada, setCompletada] = useState(false);
-  const [pagado, setPagado] = useState(false);
-  const [metodoPago, setMetodoPago] = useState('stripe'); // Nuevo estado para el método de pago
+  const [visible, setVisible] = useState(false);
+  const [confirmVisible, setConfirmVisible] = useState(false);
+  const [formValues, setFormValues] = useState({
+    titulo: '',
+    descripcion: '',
+    costo: '',
+    fechaCreacion: new Date().toISOString().split('T')[0], // Fecha de creación asignada automáticamente
+    fechaVencimiento: '', // Fecha de vencimiento seleccionable
+    prioridad: 'media',
+    asignadoA: '',
+    categoria: '',
+    completada: false,
+    pagado: false,
+    metodoPago: 'stripe',
+  });
   const [editingProyecto, setEditingProyecto] = useState(null);
+  const stripe = useStripe();
+  const elements = useElements();
 
   useEffect(() => {
     fetchProyectos();
@@ -30,208 +43,233 @@ const ProyectoForm = () => {
       const response = await api.get('/');
       setProyectos(response.data);
     } catch (error) {
-      console.error('Error al obtener los proyectos:', error);
+      notification.error({ message: 'Error al obtener los proyectos' });
     }
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  const handleSubmit = async () => {
     try {
-      if (editingProyecto) {
-        // Actualizar proyecto
-        await api.put(`/${editingProyecto.id}`, {
-          titulo,
-          descripcion,
-          completada,
-          fecha_vencimiento: fechaVencimiento,
-          prioridad,
-          asignado_a: asignadoA,
-          categoria,
-          costo_proyecto: parseFloat(costo),
-          pagado,
-          metodo_pago: metodoPago,
-        });
-        alert('Proyecto actualizado con éxito');
-        setEditingProyecto(null);
-      } else {
-        // Crear nuevo proyecto
-        await api.post('/', {
-          titulo,
-          descripcion,
-          completada,
-          fecha_vencimiento: fechaVencimiento,
-          prioridad,
-          asignado_a: asignadoA,
-          categoria,
-          costo_proyecto: parseFloat(costo),
-          pagado,
-          metodo_pago: metodoPago,
-        });
-        alert('Proyecto creado con éxito');
-        if (metodoPago === 'stripe') {
-          alert('Por favor, completa el proceso de pago con tarjeta');
-        }
+      if (!formValues.titulo || !formValues.costo) {
+        notification.warning({ message: 'Completa los campos obligatorios' });
+        return;
       }
+
+      let paymentMethodId = null;
+
+      if (formValues.metodoPago === 'stripe') {
+        paymentMethodId = await handleStripePayment();
+        if (!paymentMethodId) return;
+        formValues.pagado = true;
+      }
+
+      if (editingProyecto) {
+        await api.put(`/${editingProyecto.id}`, {
+          ...formValues,
+          costo_proyecto: parseFloat(formValues.costo),
+          paymentMethodId,
+        });
+        notification.success({ message: 'Proyecto actualizado con éxito' });
+      } else {
+        await api.post('/', {
+          ...formValues,
+          costo_proyecto: parseFloat(formValues.costo),
+          paymentMethodId,
+        });
+        notification.success({ message: 'Proyecto creado con éxito' });
+      }
+
       resetForm();
       fetchProyectos();
+      setVisible(false);
     } catch (error) {
-      console.error('Error al gestionar el proyecto:', error);
-      alert('Error al gestionar el proyecto');
+      notification.error({ message: 'Error al gestionar el proyecto' });
     }
   };
 
-  const handlePayment = async (token) => {
-    if (metodoPago === 'stripe') {
-      try {
-        const response = await api.post('/pago', {
-          token,
-          amount: parseFloat(costo) * 100, // Convertir a centavos
-        });
-        if (response.data.success) {
-          alert('Pago realizado con éxito');
-          setPagado(true);
-        } else {
-          alert('Error en el proceso de pago');
-        }
-      } catch (error) {
-        console.error('Error al procesar el pago:', error);
-        alert('Error al procesar el pago');
+  const handleStripePayment = async () => {
+    if (!stripe || !elements) {
+      notification.error({ message: 'Stripe no está completamente cargado' });
+      return null;
+    }
+    try {
+      const { data } = await api.post('/create-payment-intent', {
+        amount: parseFloat(formValues.costo) * 100,
+      });
+      const result = await stripe.confirmCardPayment(data.clientSecret, {
+        payment_method: {
+          card: elements.getElement(CardElement),
+        },
+      });
+
+      if (result.error) {
+        notification.error({ message: `Error en el pago: ${result.error.message}` });
+        return null;
+      } else if (result.paymentIntent.status === 'succeeded') {
+        notification.success({ message: 'Pago realizado con éxito' });
+        return result.paymentIntent.id;
       }
-    } else {
-      handleEfectivo();
+    } catch (error) {
+      notification.error({ message: 'Error al procesar el pago con Stripe' });
+      return null;
     }
-  };
-
-  const handleEfectivo = () => {
-    alert('Pago en efectivo registrado con éxito');
-    setPagado(true);
   };
 
   const handleEdit = (proyecto) => {
     setEditingProyecto(proyecto);
-    setTitulo(proyecto.titulo);
-    setDescripcion(proyecto.descripcion);
-    setCosto(proyecto.costo_proyecto);
-    setFechaVencimiento(proyecto.fecha_vencimiento);
-    setPrioridad(proyecto.prioridad);
-    setAsignadoA(proyecto.asignado_a);
-    setCategoria(proyecto.categoria);
-    setCompletada(proyecto.completada);
-    setPagado(proyecto.pagado);
-    setMetodoPago(proyecto.metodo_pago);
+
+    if (proyecto.fecha_vencimiento && new Date(proyecto.fecha_vencimiento) < new Date()) {
+      setConfirmVisible(true);
+    } else {
+      setFormValues({
+        titulo: proyecto.titulo,
+        descripcion: proyecto.descripcion,
+        costo: proyecto.costo_proyecto,
+        fechaCreacion: proyecto.fecha_creacion, // Mantiene la fecha de creación actual
+        fechaVencimiento: proyecto.fecha_vencimiento, // Permite editar la fecha de vencimiento
+        prioridad: proyecto.prioridad,
+        asignadoA: proyecto.asignado_a,
+        categoria: proyecto.categoria,
+        completada: proyecto.completada,
+        pagado: proyecto.metodo_pago === "efectivo" ? formValues.pagado : proyecto.pagado,
+        metodoPago: proyecto.metodo_pago,
+      });
+      setVisible(true);
+    }
   };
 
   const handleDelete = async (id) => {
     try {
       await api.delete(`/${id}`);
-      alert('Proyecto eliminado con éxito');
+      notification.success({ message: 'Proyecto eliminado con éxito' });
       fetchProyectos();
     } catch (error) {
-      console.error('Error al eliminar el proyecto:', error);
-      alert('Error al eliminar el proyecto');
+      notification.error({ message: 'Error al eliminar el proyecto' });
     }
   };
 
   const resetForm = () => {
-    setTitulo('');
-    setDescripcion('');
-    setCosto('');
-    setFechaVencimiento('');
-    setPrioridad('media');
-    setAsignadoA('');
-    setCategoria('');
-    setCompletada(false);
-    setPagado(false);
-    setMetodoPago('stripe');
+    setFormValues({
+      titulo: '',
+      descripcion: '',
+      costo: '',
+      fechaCreacion: new Date().toISOString().split('T')[0], // Resetea con la fecha actual
+      fechaVencimiento: '', // Mantener editable
+      prioridad: 'media',
+      asignadoA: '',
+      categoria: '',
+      completada: false,
+      pagado: false,
+      metodoPago: 'stripe',
+    });
     setEditingProyecto(null);
+  };
+
+  const handleConfirmCompletion = () => {
+    setFormValues((prev) => ({ ...prev, completada: true }));
+    setConfirmVisible(false);
+    setVisible(true);
   };
 
   return (
     <div className="form-container">
-      <h1>{editingProyecto ? 'Editar Proyecto' : 'Crear Proyecto'}</h1>
-      <form onSubmit={handleSubmit}>
-        <label>Título:</label>
-        <input
-          type="text"
-          value={titulo}
-          onChange={(e) => setTitulo(e.target.value)}
+      <Button type="primary" onClick={() => setVisible(true)}>
+        {editingProyecto ? 'Editar Proyecto' : 'Crear Proyecto'}
+      </Button>
+      <Modal
+        title={editingProyecto ? 'Editar Proyecto' : 'Crear Proyecto'}
+        visible={visible}
+        onCancel={() => { setVisible(false); resetForm(); }}
+        onOk={handleSubmit}
+      >
+        <Input
+          placeholder="Título"
+          value={formValues.titulo}
+          onChange={(e) => setFormValues({ ...formValues, titulo: e.target.value })}
           required
         />
-        <label>Descripción:</label>
-        <textarea
-          value={descripcion}
-          onChange={(e) => setDescripcion(e.target.value)}
+        <Input.TextArea
+          placeholder="Descripción"
+          value={formValues.descripcion}
+          onChange={(e) => setFormValues({ ...formValues, descripcion: e.target.value })}
         />
-        <label>Costo:</label>
-        <input
+        <Input
           type="number"
-          value={costo}
-          onChange={(e) => setCosto(e.target.value)}
+          placeholder="Costo"
+          value={formValues.costo}
+          onChange={(e) => setFormValues({ ...formValues, costo: e.target.value })}
           required
         />
-        <label>Fecha de Vencimiento:</label>
-        <input
+        <Input
           type="date"
-          value={fechaVencimiento}
-          onChange={(e) => setFechaVencimiento(e.target.value)}
+          placeholder="Fecha de Creación"
+          value={formValues.fechaCreacion} // Fecha de creación no editable
+          readOnly
         />
-        <label>Prioridad:</label>
-        <select
-          value={prioridad}
-          onChange={(e) => setPrioridad(e.target.value)}
+        <Input
+          type="date"
+          placeholder="Fecha de Vencimiento"
+          value={formValues.fechaVencimiento} // Fecha de vencimiento editable
+          onChange={(e) => setFormValues({ ...formValues, fechaVencimiento: e.target.value })}
+        />
+        <Select
+          value={formValues.prioridad}
+          onChange={(value) => setFormValues({ ...formValues, prioridad: value })}
         >
-          <option value="baja">Baja</option>
-          <option value="media">Media</option>
-          <option value="alta">Alta</option>
-        </select>
-        <label>Asignado a:</label>
-        <input
-          type="text"
-          value={asignadoA}
-          onChange={(e) => setAsignadoA(e.target.value)}
+          <Option value="baja">Baja</Option>
+          <Option value="media">Media</Option>
+          <Option value="alta">Alta</Option>
+        </Select>
+        <Input
+          placeholder="Asignado a"
+          value={formValues.asignadoA}
+          onChange={(e) => setFormValues({ ...formValues, asignadoA: e.target.value })}
         />
-        <label>Categoría:</label>
-        <input
-          type="text"
-          value={categoria}
-          onChange={(e) => setCategoria(e.target.value)}
+        <Input
+          placeholder="Categoría"
+          value={formValues.categoria}
+          onChange={(e) => setFormValues({ ...formValues, categoria: e.target.value })}
         />
-        <label>Completada:</label>
-        <input
-          type="checkbox"
-          checked={completada}
-          onChange={(e) => setCompletada(e.target.checked)}
-        />
-        <label>Pagado:</label>
-        <input
-          type="checkbox"
-          checked={pagado}
-          onChange={(e) => setPagado(e.target.checked)}
-        />
-        <label>Método de Pago:</label>
-        <select
-          value={metodoPago}
-          onChange={(e) => setMetodoPago(e.target.value)}
+        {formValues.fechaVencimiento && new Date(formValues.fechaVencimiento) < new Date() && (
+          <Checkbox
+            checked={formValues.completada}
+            onChange={(e) => setFormValues({ ...formValues, completada: e.target.checked })}
+          >
+            Completada
+          </Checkbox>
+        )}
+        {formValues.metodoPago === 'efectivo' && (
+          <Checkbox
+            checked={formValues.pagado}
+            onChange={(e) => setFormValues({ ...formValues, pagado: e.target.checked })}
+          >
+            Pagado
+          </Checkbox>
+        )}
+        <Select
+          value={formValues.metodoPago}
+          onChange={(value) => setFormValues({ ...formValues, metodoPago: value })}
         >
-          <option value="stripe">Stripe</option>
-          <option value="efectivo">Efectivo</option>
-        </select>
-        <button type="submit">{editingProyecto ? 'Actualizar Proyecto' : 'Crear Proyecto'}</button>
-        {editingProyecto && <button type="button" onClick={resetForm}>Cancelar Edición</button>}
-      </form>
+          <Option value="stripe">Tarjeta de débito o crédito</Option>
+          <Option value="efectivo">Efectivo</Option>
+        </Select>
+        {formValues.metodoPago === 'stripe' && (
+          <div className="payment-section">
+            <CardElement />
+          </div>
+        )}
+      </Modal>
 
-      {metodoPago === 'stripe' && !editingProyecto && (
-        <StripeCheckout
-          stripeKey="pk_test_51Q9AMkB3EtWqqOZ2sr4dExyPgtFOgL7UBEAVEiuUbKdBFaNQSCivO5lTntoXL7DO6vxSjlRio5frb1MrqtztSg68007Hlq6at0"
-          token={handlePayment}
-          amount={parseFloat(costo) * 100}
-          name="Pago de Proyecto"
-          currency="USD"
-        />
-      )}
+      <Modal
+        title="Confirmar estado de completado"
+        visible={confirmVisible}
+        onOk={handleConfirmCompletion}
+        onCancel={() => setConfirmVisible(false)}
+      >
+        <p>La fecha de vencimiento ha pasado. ¿Marcar como completado?</p>
+      </Modal>
 
-<h2>Lista de Proyectos</h2>
-<ul className="project-list">
+      <h2>Lista de Proyectos</h2>
+      <ul className="project-list">
         {proyectos.map((proyecto) => (
           <li key={proyecto.id} className="project-item">
             <h3>{proyecto.titulo}</h3>
@@ -239,8 +277,13 @@ const ProyectoForm = () => {
             <p><strong>Asignado a:</strong> {proyecto.asignado_a}</p>
             <p><strong>Prioridad:</strong> {proyecto.prioridad}</p>
             <p><strong>Completada:</strong> {proyecto.completada ? 'Sí' : 'No'}</p>
-            <button onClick={() => handleEdit(proyecto)}>Editar</button>
-            <button onClick={() => handleDelete(proyecto.id)}>Eliminar</button>
+            <p><strong>Pagado:</strong> {proyecto.pagado ? 'Sí' : 'No'}</p>
+            <p><strong>Categoría:</strong> {proyecto.categoria}</p>
+            <p><strong>Fecha de Creación:</strong> {new Date(proyecto.fecha_creacion).toLocaleDateString()}</p>
+            <p><strong>Fecha de Vencimiento:</strong> {proyecto.fecha_vencimiento ? new Date(proyecto.fecha_vencimiento).toLocaleDateString() : 'No asignada'}</p>
+            <p><strong>Costo:</strong> ${proyecto.costo_proyecto}</p>
+            <Button onClick={() => handleEdit(proyecto)}>Editar</Button>
+            <Button danger onClick={() => handleDelete(proyecto.id)}>Eliminar</Button>
           </li>
         ))}
       </ul>
@@ -248,4 +291,11 @@ const ProyectoForm = () => {
   );
 };
 
-export default ProyectoForm;
+const App = () => (
+  <Elements stripe={stripePromise}>
+    <ProyectoForm />
+  </Elements>
+);
+
+export default App;
+
