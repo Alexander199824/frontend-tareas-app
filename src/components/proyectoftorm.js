@@ -1,11 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Modal, Button, Input, Select, Checkbox, notification } from 'antd';
-import { loadStripe } from '@stripe/stripe-js';
-import { Elements, useStripe, useElements, CardElement } from '@stripe/react-stripe-js';
-import '../css/proyecto.css';
-
-const stripePromise = loadStripe('pk_test_51Q9AMkB3EtWqqOZ2sr4dExyPgtFOgL7UBEAVEiuUbKdBFaNQSCivO5lTntoXL7DO6vxSjlRio5frb1MrqtztSg68007Hlq6at0'); // Reemplaza con tu clave pública
+import { useStripe, useElements, CardElement } from '@stripe/react-stripe-js';
+import '../css/proyecto.css'; // Asegúrate de que esta ruta sea correcta y que el archivo exista
 
 const { Option } = Select;
 
@@ -16,13 +13,12 @@ const api = axios.create({
 const ProyectoForm = () => {
   const [proyectos, setProyectos] = useState([]);
   const [visible, setVisible] = useState(false);
-  const [confirmVisible, setConfirmVisible] = useState(false);
   const [formValues, setFormValues] = useState({
     titulo: '',
     descripcion: '',
     costo: '',
-    fechaCreacion: new Date().toISOString().split('T')[0], // Fecha de creación asignada automáticamente
-    fechaVencimiento: '', // Fecha de vencimiento seleccionable
+    fechaCreacion: new Date().toISOString().split('T')[0],
+    fechaVencimiento: '',
     prioridad: 'media',
     asignadoA: '',
     categoria: '',
@@ -35,12 +31,12 @@ const ProyectoForm = () => {
   const elements = useElements();
 
   useEffect(() => {
-    fetchProyectos();
+    fetchProyectos(1); // Carga la primera página al inicio
   }, []);
 
-  const fetchProyectos = async () => {
+  const fetchProyectos = async (page = 1) => {
     try {
-      const response = await api.get('/');
+      const response = await api.get(`/?page=${page}&limit=10`); // Paginación con límite de 10
       setProyectos(response.data);
     } catch (error) {
       notification.error({ message: 'Error al obtener los proyectos' });
@@ -62,24 +58,22 @@ const ProyectoForm = () => {
         formValues.pagado = true;
       }
 
+      const proyectoData = {
+        ...formValues,
+        costo_proyecto: parseFloat(formValues.costo),
+        paymentMethodId,
+      };
+
       if (editingProyecto) {
-        await api.put(`/${editingProyecto.id}`, {
-          ...formValues,
-          costo_proyecto: parseFloat(formValues.costo),
-          paymentMethodId,
-        });
+        await api.put(`/${editingProyecto.id}`, proyectoData);
         notification.success({ message: 'Proyecto actualizado con éxito' });
       } else {
-        await api.post('/', {
-          ...formValues,
-          costo_proyecto: parseFloat(formValues.costo),
-          paymentMethodId,
-        });
+        await api.post('/', proyectoData);
         notification.success({ message: 'Proyecto creado con éxito' });
       }
 
       resetForm();
-      fetchProyectos();
+      fetchProyectos(1); // Recarga la primera página de la lista
       setVisible(false);
     } catch (error) {
       notification.error({ message: 'Error al gestionar el proyecto' });
@@ -116,44 +110,56 @@ const ProyectoForm = () => {
 
   const handleEdit = (proyecto) => {
     setEditingProyecto(proyecto);
-
-    if (proyecto.fecha_vencimiento && new Date(proyecto.fecha_vencimiento) < new Date()) {
-      setConfirmVisible(true);
-    } else {
-      setFormValues({
-        titulo: proyecto.titulo,
-        descripcion: proyecto.descripcion,
-        costo: proyecto.costo_proyecto,
-        fechaCreacion: proyecto.fecha_creacion, // Mantiene la fecha de creación actual
-        fechaVencimiento: proyecto.fecha_vencimiento, // Permite editar la fecha de vencimiento
-        prioridad: proyecto.prioridad,
-        asignadoA: proyecto.asignado_a,
-        categoria: proyecto.categoria,
-        completada: proyecto.completada,
-        pagado: proyecto.metodo_pago === "efectivo" ? formValues.pagado : proyecto.pagado,
-        metodoPago: proyecto.metodo_pago,
-      });
-      setVisible(true);
-    }
+    setFormValues({
+      titulo: proyecto.titulo,
+      descripcion: proyecto.descripcion,
+      costo: proyecto.costo_proyecto,
+      fechaCreacion: proyecto.fecha_creacion,
+      fechaVencimiento: proyecto.fecha_vencimiento,
+      prioridad: proyecto.prioridad,
+      asignadoA: proyecto.asignado_a,
+      categoria: proyecto.categoria,
+      completada: proyecto.completada,
+      pagado: proyecto.pagado,
+      metodoPago: proyecto.metodo_pago,
+    });
+    setVisible(true);
   };
 
   const handleDelete = async (id) => {
     try {
       await api.delete(`/${id}`);
       notification.success({ message: 'Proyecto eliminado con éxito' });
-      fetchProyectos();
+      fetchProyectos(1); // Recarga la primera página de la lista
     } catch (error) {
       notification.error({ message: 'Error al eliminar el proyecto' });
     }
   };
+
+  const ProyectoItem = React.memo(({ proyecto }) => (
+    <li key={proyecto.id} className="project-item">
+      <h3>{proyecto.titulo}</h3>
+      <p>{proyecto.descripcion}</p>
+      <p><strong>Asignado a:</strong> {proyecto.asignado_a}</p>
+      <p><strong>Prioridad:</strong> {proyecto.prioridad}</p>
+      <p><strong>Completada:</strong> {proyecto.completada ? 'Sí' : 'No'}</p>
+      <p><strong>Pagado:</strong> {proyecto.pagado ? 'Sí' : 'No'}</p>
+      <p><strong>Categoría:</strong> {proyecto.categoria}</p>
+      <p><strong>Fecha de Creación:</strong> {new Date(proyecto.fecha_creacion).toLocaleDateString()}</p>
+      <p><strong>Fecha de Vencimiento:</strong> {proyecto.fecha_vencimiento ? new Date(proyecto.fecha_vencimiento).toLocaleDateString() : 'No asignada'}</p>
+      <p><strong>Costo:</strong> ${proyecto.costo_proyecto}</p>
+      <Button onClick={() => handleEdit(proyecto)}>Editar</Button>
+      <Button danger onClick={() => handleDelete(proyecto.id)}>Eliminar</Button>
+    </li>
+  ));
 
   const resetForm = () => {
     setFormValues({
       titulo: '',
       descripcion: '',
       costo: '',
-      fechaCreacion: new Date().toISOString().split('T')[0], // Resetea con la fecha actual
-      fechaVencimiento: '', // Mantener editable
+      fechaCreacion: new Date().toISOString().split('T')[0],
+      fechaVencimiento: '',
       prioridad: 'media',
       asignadoA: '',
       categoria: '',
@@ -164,23 +170,12 @@ const ProyectoForm = () => {
     setEditingProyecto(null);
   };
 
-  const handleConfirmCompletion = () => {
-    setFormValues((prev) => ({ ...prev, completada: true }));
-    setConfirmVisible(false);
-    setVisible(true);
-  };
-
   return (
     <div className="form-container">
       <Button type="primary" onClick={() => setVisible(true)}>
         {editingProyecto ? 'Editar Proyecto' : 'Crear Proyecto'}
       </Button>
-      <Modal
-        title={editingProyecto ? 'Editar Proyecto' : 'Crear Proyecto'}
-        visible={visible}
-        onCancel={() => { setVisible(false); resetForm(); }}
-        onOk={handleSubmit}
-      >
+      <Modal title={editingProyecto ? 'Editar Proyecto' : 'Crear Proyecto'} visible={visible} onCancel={() => { setVisible(false); resetForm(); }} onOk={handleSubmit}>
         <Input
           placeholder="Título"
           value={formValues.titulo}
@@ -202,13 +197,13 @@ const ProyectoForm = () => {
         <Input
           type="date"
           placeholder="Fecha de Creación"
-          value={formValues.fechaCreacion} // Fecha de creación no editable
+          value={formValues.fechaCreacion}
           readOnly
         />
         <Input
           type="date"
           placeholder="Fecha de Vencimiento"
-          value={formValues.fechaVencimiento} // Fecha de vencimiento editable
+          value={formValues.fechaVencimiento}
           onChange={(e) => setFormValues({ ...formValues, fechaVencimiento: e.target.value })}
         />
         <Select
@@ -229,14 +224,6 @@ const ProyectoForm = () => {
           value={formValues.categoria}
           onChange={(e) => setFormValues({ ...formValues, categoria: e.target.value })}
         />
-        {formValues.fechaVencimiento && new Date(formValues.fechaVencimiento) < new Date() && (
-          <Checkbox
-            checked={formValues.completada}
-            onChange={(e) => setFormValues({ ...formValues, completada: e.target.checked })}
-          >
-            Completada
-          </Checkbox>
-        )}
         {formValues.metodoPago === 'efectivo' && (
           <Checkbox
             checked={formValues.pagado}
@@ -259,43 +246,14 @@ const ProyectoForm = () => {
         )}
       </Modal>
 
-      <Modal
-        title="Confirmar estado de completado"
-        visible={confirmVisible}
-        onOk={handleConfirmCompletion}
-        onCancel={() => setConfirmVisible(false)}
-      >
-        <p>La fecha de vencimiento ha pasado. ¿Marcar como completado?</p>
-      </Modal>
-
       <h2>Lista de Proyectos</h2>
       <ul className="project-list">
         {proyectos.map((proyecto) => (
-          <li key={proyecto.id} className="project-item">
-            <h3>{proyecto.titulo}</h3>
-            <p>{proyecto.descripcion}</p>
-            <p><strong>Asignado a:</strong> {proyecto.asignado_a}</p>
-            <p><strong>Prioridad:</strong> {proyecto.prioridad}</p>
-            <p><strong>Completada:</strong> {proyecto.completada ? 'Sí' : 'No'}</p>
-            <p><strong>Pagado:</strong> {proyecto.pagado ? 'Sí' : 'No'}</p>
-            <p><strong>Categoría:</strong> {proyecto.categoria}</p>
-            <p><strong>Fecha de Creación:</strong> {new Date(proyecto.fecha_creacion).toLocaleDateString()}</p>
-            <p><strong>Fecha de Vencimiento:</strong> {proyecto.fecha_vencimiento ? new Date(proyecto.fecha_vencimiento).toLocaleDateString() : 'No asignada'}</p>
-            <p><strong>Costo:</strong> ${proyecto.costo_proyecto}</p>
-            <Button onClick={() => handleEdit(proyecto)}>Editar</Button>
-            <Button danger onClick={() => handleDelete(proyecto.id)}>Eliminar</Button>
-          </li>
+          <ProyectoItem key={proyecto.id} proyecto={proyecto} />
         ))}
       </ul>
     </div>
   );
 };
 
-const App = () => (
-  <Elements stripe={stripePromise}>
-    <ProyectoForm />
-  </Elements>
-);
-
-export default App;
-
+export default ProyectoForm;
